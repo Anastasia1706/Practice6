@@ -1,0 +1,129 @@
+---
+title: "Practice6"
+author: "A.Lukyanova"
+date: '7 апреля 2018 г '
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library('ISLR') # набор данных Hitters
+library('leaps') # функция regsubset() — отбор оптимального 
+# подмножества переменных
+library('glmnet') # функция glmnet() — лассо
+library('pls') # регрессия на главные компоненты — pcr()
+# и частный МНК — plsr()
+library("MASS")
+```
+
+Загрузим данные для выполнения задания: загрузим пакет Boston и установим ядро.
+```{r data, message=FALSE}
+my.seed <- 1
+data(Boston)
+str(Boston)
+fix(Boston)
+names(Boston)
+dim(Boston)
+```
+
+Выполним пошаговое включение регрессоров.
+```{r forward, message=FALSE}
+regfit.fwd <- regsubsets(crim ~ ., data = Boston,
+                         nvmax = 13, method = 'forward')
+summary(regfit.fwd)
+
+round(coef(regfit.fwd, 13), 3)
+```
+
+Запишем функцию для прогноза функции:
+```{r regsubset, message=F}
+predict.regsubsets <- function(object, newdata, id, ...){
+    form <- as.formula(object$call[[2]])
+    mat <- model.matrix(form, newdata)
+    coefi <- coef(object, id = id)
+    xvars <- names(coefi)
+    mat[, xvars] %*% coefi
+}
+```
+
+Выполним кросс-валидацию для нахождения оптимальной модели
+```{r cross-validation, message=FALSE}
+# k-кратная кросс-валидация
+# отбираем 10 блоков наблюдений
+k <- 10
+set.seed(my.seed)
+folds <- sample(1:k, nrow(Boston), replace = T)
+
+# заготовка под матрицу с ошибками
+cv.errors <- matrix(NA, k, 13, dimnames = list(NULL, paste(1:13)))
+
+# заполняем матрицу в цикле по блокам данных
+for (j in 1:k){
+  best.fit <- regsubsets(crim ~ ., data = Boston[folds != j, ],
+                         nvmax = 13)
+  # теперь цикл по количеству объясняющих переменных
+  for (i in 1:13){
+    # модельные значения Boston
+    pred <- predict(best.fit, Boston[folds == j, ], id = i)
+    # вписываем ошибку в матрицу
+    cv.errors[j, i] <- mean((Boston$crim[folds == j] - pred)^2)
+  }
+}
+
+# усредняем матрицу по каждому столбцу (т.е. по блокам наблюдений), 
+# чтобы получить оценку MSE для каждой модели с фиксированным 
+# количеством объясняющих переменных
+mean.cv.errors <- apply(cv.errors, 2, mean)
+round(mean.cv.errors, 0)
+# на графике
+plot(mean.cv.errors, type = 'b')
+points(which.min(mean.cv.errors), mean.cv.errors[which.min(mean.cv.errors)],
+       col = 'red', pch = 20, cex = 2)
+
+# перестраиваем модель с 12 объясняющими переменными на всём наборе данных
+reg.best <- regsubsets(crim ~ ., data = Boston, nvmax = 13)
+round(coef(reg.best, 12), 3)
+```
+
+Наименьшая MSE на тестовой выборке оказалась у модели с 12 предикторами (MSE=41).
+
+Воспльзуемся методом сжатия, а именно лассо-регрессией:
+```{r lasso, message=F}
+#лассо-регрессия
+# из-за синтаксиса glmnet() формируем явно матрицу объясняющих...
+x <- model.matrix(crim ~ ., Boston)[, -1]
+
+# и вектор значений зависимой переменной
+y <- Boston$crim
+
+set.seed(my.seed)
+train <- sample(1:nrow(x), nrow(x)/2)
+test <- -train
+y.test <- y[test]
+
+# вектор значений гиперпараметра лямбда
+grid <- 10^seq(10, -2, length = 100)
+
+lasso.mod <- glmnet(x[train, ], y[train], alpha = 1, lambda = grid)
+plot(lasso.mod)
+
+set.seed(my.seed)
+cv.out <- cv.glmnet(x[train, ], y[train], alpha = 1)
+plot(cv.out)
+
+bestlam <- cv.out$lambda.min
+lasso.pred <- predict(lasso.mod, s = bestlam, newx = x[test, ])
+#MSE на тестовой
+round(mean((lasso.pred - y.test)^2), 0)
+
+# коэффициенты лучшей модели
+out <- glmnet(x, y, alpha = 1, lambda = grid)
+lasso.coef <- predict(out, type = 'coefficients',
+                      s = bestlam)[1:13, ]
+round(lasso.coef, 3)
+
+round(lasso.coef[lasso.coef != 0], 3)
+
+```
+
+МSE оказалась ниже чем у метода пошагового включения, MSE=38.
